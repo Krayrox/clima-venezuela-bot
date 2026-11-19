@@ -8,10 +8,14 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     ContextTypes
 )
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
 
 # --- Cargar variables de entorno ---
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 # --- Logging ---
 logging.basicConfig(
@@ -43,7 +47,6 @@ CIUDAD_REFERENCIA = {
 
 # --- Utilidad: construir teclado en filas de N columnas ---
 def construir_teclado(botones, columnas=2):
-    """Recibe lista de InlineKeyboardButton y devuelve lista de filas."""
     filas = []
     fila_actual = []
     for boton in botones:
@@ -97,7 +100,6 @@ def obtener_clima(ciudad: str) -> str:
         viento = c["wind_speed_10m"]
         codigo = c["weather_code"]
 
-        # Traducción de códigos WMO
         descripciones = {
             0: "Despejado", 1: "Mayormente despejado", 2: "Parcialmente nublado",
             3: "Nublado", 45: "Niebla", 48: "Niebla con escarcha",
@@ -183,14 +185,53 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# --- Webhook handlers para Render ---
+async def telegram_webhook(request):
+    """Recibe las actualizaciones de Telegram vía POST."""
+    if request.method == "POST":
+        data = await request.json()
+        update = Update.de_json(data, application.bot)
+        await application.process_update(update)
+    return PlainTextResponse("ok")
+
+
+async def healthcheck(request):
+    """Endpoint para el health check de Render (GET)."""
+    return PlainTextResponse("ok")
+
+
 # --- Main ---
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("❌ Falta TELEGRAM_TOKEN en el archivo .env")
 
+    # Construimos la aplicación de Telegram (necesaria para webhook y polling)
     application = ApplicationBuilder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
 
-    print("✅ Bot iniciado. Presiona Ctrl+C para detenerlo.")
-    application.run_polling()
+    # Modo de ejecución
+    if RENDER_EXTERNAL_URL:
+        # Producción en Render: webhook
+        logger.info("Modo Producción (Webhook) en Render")
+        port = int(os.environ.get("PORT", 8443))
+        webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
+
+        # Starlette solo se usa para el webhook
+        routes = [
+            Route("/", healthcheck),
+            Route("/webhook", telegram_webhook, methods=["POST"]),
+        ]
+        web_app = Starlette(routes=routes)
+
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path="webhook",
+            webhook_url=webhook_url,
+        )
+    else:
+        # Local: polling
+        logger.info("Modo Local (Polling)")
+        print("✅ Bot iniciado. Presiona Ctrl+C para detenerlo.")
+        application.run_polling()
