@@ -3,3 +3,7 @@ requests
 python-dotenv
 uvicorn
 starlette
+.venv/
+.env
+__pycache__/
+*.pyc
